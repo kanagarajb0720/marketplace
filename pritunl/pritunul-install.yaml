@@ -109,7 +109,7 @@
 
     - name: Save Pritunl setup key to file
       copy:
-        dest: /usr/local/src/pritunl-setup-key.txt
+        dest: /root/pritunl-setup-key.txt
         content: "{{ pritunl_key.stdout }}"
         owner: root
         group: root
@@ -117,7 +117,7 @@
 
     - name: Show Pritunl setup key
       debug:
-        msg: "Pritunl Setup Key stored in /usr/local/src/pritunl-setup-key.txt"
+        msg: "Pritunl Setup Key stored in /root/pritunl-setup-key.txt"
 		
     - name: Creating a directory for shell script
       ansible.builtin.file:
