@@ -19,72 +19,91 @@
         update_cache: yes
         state: present
 
-    - name: Add Pritunl repo
+    - name: Add Pritunl repo source list
       copy:
         dest: /etc/apt/sources.list.d/pritunl.list
         content: |
           deb [ signed-by=/usr/share/keyrings/pritunl.gpg ] https://repo.pritunl.com/stable/apt jammy main
 
-    - name: Add Pritunl GPG key
+    - name: Download Pritunl GPG key
       get_url:
-        url: https://raw.githubusercontent.com/pritunl/pgp/master/pritunl_repo_pub.asc
-        dest: /tmp/pritunl.asc
+        url: "https://raw.githubusercontent.com/pritunl/pgp/master/pritunl_repo_pub.asc"
+        dest: "/tmp/pritunl_repo_pub.asc"
 
-    - name: Convert Pritunl GPG key
-      command: gpg -o /usr/share/keyrings/pritunl.gpg --dearmor /tmp/pritunl.asc
+    - name: Convert Pritunl key to keyring
+      command: >
+        gpg -o /usr/share/keyrings/pritunl.gpg --dearmor /tmp/pritunl_repo_pub.asc
       args:
         creates: /usr/share/keyrings/pritunl.gpg
 
-    - name: Add MongoDB repo
+    - name: Download MongoDB 8.0 GPG key
+      get_url:
+        url: "https://www.mongodb.org/static/pgp/server-8.0.asc"
+        dest: "/tmp/mongodb.asc"
+
+    - name: Convert MongoDB key to keyring
+      command: >
+        gpg -o /usr/share/keyrings/mongodb-server-8.0.gpg --dearmor /tmp/mongodb.asc
+      args:
+        creates: /usr/share/keyrings/mongodb-server-8.0.gpg
+
+    - name: Add MongoDB repository
       copy:
         dest: /etc/apt/sources.list.d/mongodb-org-8.0.list
         content: |
           deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/8.0 multiverse
 
-    - name: Add MongoDB GPG key
-      get_url:
-        url: https://www.mongodb.org/static/pgp/server-8.0.asc
-        dest: /tmp/mongodb.asc
-
-    - name: Convert MongoDB GPG key
-      command: gpg -o /usr/share/keyrings/mongodb-server-8.0.gpg --dearmor /tmp/mongodb.asc
-      args:
-        creates: /usr/share/keyrings/mongodb-server-8.0.gpg
-
-    - name: Update apt
+    - name: Update apt cache
       apt:
         update_cache: yes
 
-    - name: Install all packages
+    - name: Install VPN and database packages
       apt:
         name:
           - pritunl
+          - mongodb-org
           - openvpn
           - wireguard
           - wireguard-tools
-          - mongodb-org
         state: present
 
-    - name: Enable services
+    - name: Enable and start services
       systemd:
         name: "{{ item }}"
         enabled: yes
         state: started
       loop:
-        - pritunl
         - mongod
+        - pritunl
+
+    - name: Disable HTTPS redirect in Pritunl
+      command: pritunl set web.redirect false
+
+    - name: Disable SSL in Pritunl
+      command: pritunl set web.ssl false
+
+    - name: Restart Pritunl after disabling HTTPS
+      systemd:
+        name: pritunl
+        state: restarted
 
     - name: Get Pritunl setup key
       command: pritunl setup-key
       register: pritunl_key
 
-    - name: Save setup key
+    - name: Save Pritunl setup key to file
       copy:
         dest: /root/pritunl-setup-key.txt
         content: "{{ pritunl_key.stdout }}"
+        owner: root
+        group: root
         mode: '0600'
 
-    - name: Create CloudStack directory
+    - name: Show Pritunl setup key
+      debug:
+        msg: "Pritunl Setup Key stored in /root/pritunl-setup-key.txt"
+
+    - name: Create directory for cleanup script
       file:
         path: /opt/cloudstack
         state: directory
@@ -95,7 +114,7 @@
         dest: /opt/cloudstack/cleanup.sh
         mode: '0755'
 
-    - name: Add cleanup command to bashrc
+    - name: Add cleanup script to root .bashrc
       lineinfile:
         path: /root/.bashrc
         line: "/opt/cloudstack/cleanup.sh"
