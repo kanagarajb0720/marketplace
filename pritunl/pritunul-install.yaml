@@ -6,11 +6,17 @@
 
   tasks:
 
+    # -------------------------------
+    # LOCK SSH DURING INSTALL
+    # -------------------------------
     - name: Lock SSH during installation
       shell: |
-        sed -i 's/#Match User anoncvs/ForceCommand echo Please wait until the installation is completed..../g' /etc/ssh/sshd_config
+        sed -i 's/#Match User anoncvs/ForceCommand echo Please wait until the installation is completed..../g' /etc/ssh/sshd_config || true
         systemctl restart sshd
 
+    # -------------------------------
+    # BASE PACKAGES
+    # -------------------------------
     - name: Install base packages
       apt:
         name:
@@ -19,6 +25,9 @@
         update_cache: yes
         state: present
 
+    # -------------------------------
+    # PRITUNL REPO
+    # -------------------------------
     - name: Add Pritunl repo source list
       copy:
         dest: /etc/apt/sources.list.d/pritunl.list
@@ -27,23 +36,24 @@
 
     - name: Download Pritunl GPG key
       get_url:
-        url: "https://raw.githubusercontent.com/pritunl/pgp/master/pritunl_repo_pub.asc"
-        dest: "/tmp/pritunl_repo_pub.asc"
+        url: https://raw.githubusercontent.com/pritunl/pgp/master/pritunl_repo_pub.asc
+        dest: /tmp/pritunl_repo_pub.asc
 
     - name: Convert Pritunl key to keyring
-      command: >
-        gpg -o /usr/share/keyrings/pritunl.gpg --dearmor /tmp/pritunl_repo_pub.asc
+      command: gpg -o /usr/share/keyrings/pritunl.gpg --dearmor /tmp/pritunl_repo_pub.asc
       args:
         creates: /usr/share/keyrings/pritunl.gpg
 
+    # -------------------------------
+    # MONGODB 8.0 REPO
+    # -------------------------------
     - name: Download MongoDB 8.0 GPG key
       get_url:
-        url: "https://www.mongodb.org/static/pgp/server-8.0.asc"
-        dest: "/tmp/mongodb.asc"
+        url: https://www.mongodb.org/static/pgp/server-8.0.asc
+        dest: /tmp/mongodb.asc
 
     - name: Convert MongoDB key to keyring
-      command: >
-        gpg -o /usr/share/keyrings/mongodb-server-8.0.gpg --dearmor /tmp/mongodb.asc
+      command: gpg -o /usr/share/keyrings/mongodb-server-8.0.gpg --dearmor /tmp/mongodb.asc
       args:
         creates: /usr/share/keyrings/mongodb-server-8.0.gpg
 
@@ -53,6 +63,9 @@
         content: |
           deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/8.0 multiverse
 
+    # -------------------------------
+    # PACKAGE INSTALL
+    # -------------------------------
     - name: Update apt cache
       apt:
         update_cache: yes
@@ -67,15 +80,40 @@
           - wireguard-tools
         state: present
 
-    - name: Enable and start services
+    # -------------------------------
+    # START MONGODB FIRST
+    # -------------------------------
+    - name: Enable and start MongoDB
       systemd:
-        name: "{{ item }}"
+        name: mongod
         enabled: yes
         state: started
-      loop:
-        - mongod
-        - pritunl
 
+    - name: Wait for MongoDB to fully initialize
+      retries: 20
+      delay: 3
+      command: mongosh --eval "db.runCommand({ ping: 1 })"
+      register: mongo_ping
+      until: mongo_ping.rc == 0
+
+    # -------------------------------
+    # SET MONGODB URI FOR PRITUNL
+    # -------------------------------
+    - name: Ensure MongoDB URI is set for Pritunl
+      command: pritunl set mongodb_uri "mongodb://localhost:27017/pritunl"
+
+    # -------------------------------
+    # START PRITUNL
+    # -------------------------------
+    - name: Enable and start Pritunl
+      systemd:
+        name: pritunl
+        enabled: yes
+        state: started
+
+    # -------------------------------
+    # DISABLE HTTPS + REDIRECT
+    # -------------------------------
     - name: Disable HTTPS redirect in Pritunl
       command: pritunl set web.redirect false
 
@@ -87,11 +125,14 @@
         name: pritunl
         state: restarted
 
+    # -------------------------------
+    # GET SETUP KEY
+    # -------------------------------
     - name: Get Pritunl setup key
       command: pritunl setup-key
       register: pritunl_key
 
-    - name: Save Pritunl setup key to file
+    - name: Save Pritunl setup key
       copy:
         dest: /root/pritunl-setup-key.txt
         content: "{{ pritunl_key.stdout }}"
@@ -99,11 +140,14 @@
         group: root
         mode: '0600'
 
-    - name: Show Pritunl setup key
+    - name: Show Pritunl setup key location
       debug:
-        msg: "Pritunl Setup Key stored in /root/pritunl-setup-key.txt"
+        msg: "Pritunl setup key saved at /root/pritunl-setup-key.txt"
 
-    - name: Create directory for cleanup script
+    # -------------------------------
+    # CLEANUP SCRIPT HANDLING
+    # -------------------------------
+    - name: Create CloudStack cleanup directory
       file:
         path: /opt/cloudstack
         state: directory
@@ -120,7 +164,10 @@
         line: "/opt/cloudstack/cleanup.sh"
         state: present
 
+    # -------------------------------
+    # UNLOCK SSH AFTER INSTALL
+    # -------------------------------
     - name: Unlock SSH after installation
       shell: |
-        sed -i 's/ForceCommand echo Please wait until the installation is completed..../#Match User anoncvs/g' /etc/ssh/sshd_config
+        sed -i 's/ForceCommand echo Please wait until the installation is completed..../#Match User anoncvs/g' /etc/ssh/sshd_config || true
         systemctl restart sshd
