@@ -1,13 +1,16 @@
 ---
 - name: Install Pritunl VPN Server and MongoDB on Ubuntu 22.04
-  hosts: all
+  hosts: localhost
   become: yes
   gather_facts: yes
-  tasks:
-    - name: Restarting sshd
-      shell: "sed -i 's/#Match User anoncvs/ForceCommand echo Please wait until the installation is completed..../g' /etc/ssh/sshd_config && systemctl restart sshd"
 
-    - name: Install required packages
+  tasks:
+
+    - name: Lock SSH during installation
+      shell: |
+        sed -i 's/#Match User anoncvs/ForceCommand echo Please wait until the installation is completed..../g' /etc/ssh/sshd_config
+        systemctl restart sshd
+
     - name: Install base packages
       apt:
         name:
@@ -16,126 +19,89 @@
         update_cache: yes
         state: present
 
-    - name: Add Pritunl repo source list
+    - name: Add Pritunl repo
       copy:
         dest: /etc/apt/sources.list.d/pritunl.list
         content: |
           deb [ signed-by=/usr/share/keyrings/pritunl.gpg ] https://repo.pritunl.com/stable/apt jammy main
 
-    - name: Download Pritunl GPG key
+    - name: Add Pritunl GPG key
       get_url:
-        url: "https://raw.githubusercontent.com/pritunl/pgp/master/pritunl_repo_pub.asc"
-        dest: "/tmp/pritunl_repo_pub.asc"
+        url: https://raw.githubusercontent.com/pritunl/pgp/master/pritunl_repo_pub.asc
+        dest: /tmp/pritunl.asc
 
-    - name: Convert Pritunl key to keyring
-      command: >
-        gpg -o /usr/share/keyrings/pritunl.gpg --dearmor /tmp/pritunl_repo_pub.asc
+    - name: Convert Pritunl GPG key
+      command: gpg -o /usr/share/keyrings/pritunl.gpg --dearmor /tmp/pritunl.asc
       args:
         creates: /usr/share/keyrings/pritunl.gpg
 
-    - name: Download MongoDB 8.0 GPG key
-      get_url:
-        url: "https://www.mongodb.org/static/pgp/server-8.0.asc"
-        dest: "/tmp/mongodb.asc"
-
-    - name: Convert MongoDB key to keyring
-      command: >
-        gpg -o /usr/share/keyrings/mongodb-server-8.0.gpg --dearmor /tmp/mongodb.asc
-      args:
-        creates: /usr/share/keyrings/mongodb-server-8.0.gpg
-
-    - name: Add MongoDB repository
+    - name: Add MongoDB repo
       copy:
         dest: /etc/apt/sources.list.d/mongodb-org-8.0.list
         content: |
           deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/8.0 multiverse
 
-    - name: Update apt cache
+    - name: Add MongoDB GPG key
+      get_url:
+        url: https://www.mongodb.org/static/pgp/server-8.0.asc
+        dest: /tmp/mongodb.asc
+
+    - name: Convert MongoDB GPG key
+      command: gpg -o /usr/share/keyrings/mongodb-server-8.0.gpg --dearmor /tmp/mongodb.asc
+      args:
+        creates: /usr/share/keyrings/mongodb-server-8.0.gpg
+
+    - name: Update apt
       apt:
         update_cache: yes
 
-    - name: Install OpenVPN
-      apt:
-        name: openvpn
-        state: present
-
-    - name: Install MongoDB
-      apt:
-        name: mongodb-org
-        state: present
-
-    - name: Install Pritunl and WireGuard packages
+    - name: Install all packages
       apt:
         name:
           - pritunl
           - openvpn
           - wireguard
           - wireguard-tools
+          - mongodb-org
         state: present
 
-    - name: Enable & start Pritunl service
+    - name: Enable services
       systemd:
-        name: pritunl
+        name: "{{ item }}"
         enabled: yes
         state: started
-
-    - name: Enable & start MongoDB service
-      systemd:
-        name: mongod.service
-        enabled: yes
-        state: started
-
-    - name: Check MongoDB service status
-      command: systemctl status mongod.service
-      register: mongod_status
-      changed_when: false
-
-    - name: Display Mongod service status
-      debug:
-        msg: "{{ mongod_status.stdout_lines }}"
-		
-    - name: Check pritunl service status
-      command: systemctl status pritunl.service
-      register: pritunl_status
-      changed_when: false
-
-    - name: Display pritunl service status
-      debug:
-        msg: "{{ pritunl_status.stdout_lines }}"
+      loop:
+        - pritunl
+        - mongod
 
     - name: Get Pritunl setup key
       command: pritunl setup-key
       register: pritunl_key
 
-    - name: Save Pritunl setup key to file
+    - name: Save setup key
       copy:
         dest: /root/pritunl-setup-key.txt
         content: "{{ pritunl_key.stdout }}"
-        owner: root
-        group: root
         mode: '0600'
 
-    - name: Show Pritunl setup key
-      debug:
-        msg: "Pritunl Setup Key stored in /root/pritunl-setup-key.txt"
-		
-    - name: Creating a directory for shell script
-      ansible.builtin.file:
+    - name: Create CloudStack directory
+      file:
         path: /opt/cloudstack
-        state: directory         
-          
-    - name: Copy files for shell script
-      copy:
-        src: "{{ item.confsrc }}"
-        dest: "{{ item.confdest }}"
-      with_items: 
-         - { confsrc: '/usr/local/src/pritunl/cleanup.sh', confdest: '/opt/cloudstack/'}     
+        state: directory
 
-    - name: Adding a line for shell script
+    - name: Copy cleanup script
+      copy:
+        src: /usr/local/src/pritunl/cleanup.sh
+        dest: /opt/cloudstack/cleanup.sh
+        mode: '0755'
+
+    - name: Add cleanup command to bashrc
       lineinfile:
         path: /root/.bashrc
-        line: "chmod +x /usr/local/src/pritunl/cleanup.sh && /usr/local/src/pritunl/cleanup.sh"
-        state: present  
+        line: "/opt/cloudstack/cleanup.sh"
+        state: present
 
-    - name: Restarting sshd
-      shell: "sed -i 's/ForceCommand echo Please wait until the installation is completed..../#Match User anoncvs/g' /etc/ssh/sshd_config && systemctl restart sshd"
+    - name: Unlock SSH after installation
+      shell: |
+        sed -i 's/ForceCommand echo Please wait until the installation is completed..../#Match User anoncvs/g' /etc/ssh/sshd_config
+        systemctl restart sshd
